@@ -8,29 +8,48 @@
 
 #define UNUSED(x) (void)x
 
+/*
+ * Application configuration options
+ */
 struct entropy_config {
-    const char* bdev_name;
-    uint32_t max_queue_depth;
-    uint32_t thread_count;
+    const char* bdev_name; /* Name of the block device to use */
+    uint32_t max_queue_depth; /* Maximum number of outstanding I/O requests in any given I/O channel */
+    uint32_t thread_count; /* How many threads we will use */
 };
 
+/*
+ * This variable stores application-specific configuration options provided by users. As we cannot pass
+ * context to spdk_app_parse_args, it must be a global variable
+ */
 static struct entropy_config g_config;
 
+/*
+ * This struct stores application-specific context, including the block we are currently reading and the
+ * frequency of each byte value so far
+ */
 struct entropy_job {
-    struct spdk_bdev* bdev;
-    struct spdk_bdev_desc* bdev_desc;
-    struct spdk_io_channel* io_channel;
-    struct spdk_bdev_io_wait_entry bdev_io_wait;
+    struct spdk_bdev* bdev; /* A struct describing the bdev we are using */
+    struct spdk_bdev_desc* bdev_desc; /* A descriptor for the bdev */
+    struct spdk_io_channel* io_channel; /* The I/O channel we use for reading. Each SPDK thread must use
+                                           its own I/O channel, obtained by calling spdk_bdev_get_io_channel*/
+    struct spdk_bdev_io_wait_entry bdev_io_wait; /* bdev I/O submission can fail with rc=-ENOMEM
+                                                    if the spdk_bdev_io buffer could not be allocated. In such
+                                                    cases, we must wait until a buffer is available, by calling
+                                                    spdk_bdev_queue_io_wait with this struct properly filled out */
 
-    const char* bdev_name;
-    uint64_t block_count;
-    uint64_t current_block;
-    uint32_t io_size;
-    unsigned char* buff;
+    const char* bdev_name; /* The name of the block device we are using*/
+    uint64_t block_count; /* The number of blocks in the bdev */
+    uint64_t current_block; /* The offset of the block we are currently reading from */
+    uint32_t io_size; /* The size of each I/O in bytes */
+    unsigned char* buff; /* A DMA memory region that we will use as a buffer for I/O operations */
 
-    uint64_t frequencies[256];
+    uint64_t frequencies[256]; /* An array tracking how often each different byte-value has been seen */
 };
 
+/*
+ * An auxiliary function that parses the value of a given flag, and updates
+ * g_config accordingly
+ */
 static int parse_args(int flag, char* value) {
     long long tmp = 0;
     if (flag == 'q' || flag == 't') {
@@ -59,7 +78,9 @@ static int parse_args(int flag, char* value) {
     }
     return 0;
 }
-
+/*
+ * An auxiliary function that explains how to run our application
+ */
 static void usage(void) {
     printf(" -b <bdev>                 name of the bdev to use\n");
     printf(" -q <depth>                io depth\n");
@@ -82,6 +103,7 @@ static struct entropy_job* create_job(void) {
     return job;
 }
 
+/* Terminate the application */
 static void entropy_end(struct entropy_job* job, int rc) {
     spdk_put_io_channel(job->io_channel); // Close the I/O channel
     spdk_bdev_close(job->bdev_desc); // Close the bdev descriptor
@@ -89,15 +111,25 @@ static void entropy_end(struct entropy_job* job, int rc) {
     spdk_app_stop(rc); // Stop the SPDK application framework
 }
 
+/*
+ * A function that handles bdev removal. If our underlying bdev is removed while
+ * we are working, we must stop using it. In this case, it means our application
+ * must stop.
+ */
 static void bdev_removed(enum spdk_bdev_event_type type, struct spdk_bdev* bdev,
                          void* event_ctx) {
     UNUSED(bdev);
     struct entropy_job* job = event_ctx;
     if (type == SPDK_BDEV_EVENT_REMOVE) {
-        entropy_end(job, 0);
+        SPDK_ERRLOG("Bdev %s has been removed. Aborting.\n", job->bdev_name);
+        entropy_end(job, -1);
     }
 }
 
+/*
+ * An auxiliary function that opens a descriptor to the target bdev and creates
+ * an I/O channel for it
+ */
 static int open_bdev(struct entropy_job* job) {
     // Open bdev in read-only mode
     int rc = spdk_bdev_open_ext(job->bdev_name, 0, bdev_removed, job,
@@ -142,6 +174,7 @@ static float compute_entropy(uint64_t frequencies[], int N,
     return entropy;
 }
 
+/* Called when we finish processing the last block */
 static void entropy_complete(struct entropy_job* job) {
     float entropy =
         compute_entropy(job->frequencies, 256, job->block_count * job->io_size);
@@ -150,11 +183,13 @@ static void entropy_complete(struct entropy_job* job) {
     entropy_end(job, 0);
 }
 
+/* "Main" application function. This is where we will submit our I/O requests */
 static void entropy_run(void* ctx) {
         // Write your code here
        entropy_complete(ctx); 
 }
 
+/* SPDK application entry-point */
 static void entropy_start(void* ctx) {
     UNUSED(ctx);
 
