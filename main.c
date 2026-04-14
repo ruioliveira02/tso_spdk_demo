@@ -83,10 +83,10 @@ static struct entropy_job* create_job(void) {
 }
 
 static void entropy_end(struct entropy_job* job, int rc) {
-    spdk_put_io_channel(job->io_channel); // Close the I/O channel
-    spdk_bdev_close(job->bdev_desc); // Close the bdev descriptor
+    spdk_put_io_channel(job->io_channel);
+    spdk_bdev_close(job->bdev_desc);
     free_job(job);
-    spdk_app_stop(rc); // Stop the SPDK application framework
+    spdk_app_stop(rc);
 }
 
 static void bdev_removed(enum spdk_bdev_event_type type, struct spdk_bdev* bdev,
@@ -104,19 +104,16 @@ static int open_bdev(struct entropy_job* job) {
                                 &job->bdev_desc);
 
     if (rc == 0) {
-        // Get a descriptor to the bdev and get important information
         job->bdev = spdk_bdev_desc_get_bdev(job->bdev_desc);
         job->block_count = job->bdev->blockcnt;
         job->io_size = job->bdev->blocklen;
 
-        // Allocate DMA memory to use as I/O buffer
         job->buff = spdk_dma_malloc(job->io_size, 0, NULL);
         if (!job->buff) {
             SPDK_ERRLOG("Unable to allocate DMA buffer.\n");
             spdk_bdev_close(job->bdev_desc);
         }
 
-        // Open an I/O channel associated with the bdev descriptor
         job->io_channel = spdk_bdev_get_io_channel(job->bdev_desc);
         if (!job->io_channel) {
             SPDK_ERRLOG("Unable to open I/O channel to bdev.\n");
@@ -150,9 +147,50 @@ static void entropy_complete(struct entropy_job* job) {
     entropy_end(job, 0);
 }
 
+static void entropy_run(void* ctx);
+
+static void entropy_queue_io(struct entropy_job* job) {
+    job->bdev_io_wait.bdev = job->bdev;
+    job->bdev_io_wait.cb_fn = entropy_run;
+    job->bdev_io_wait.cb_arg = job;
+    spdk_bdev_queue_io_wait(job->bdev, job->io_channel, &job->bdev_io_wait);
+}
+
+static void read_cb(struct spdk_bdev_io* bdev_io, bool success, void* cb_arg) {
+    spdk_bdev_free_io(bdev_io);
+    struct entropy_job* job = cb_arg;
+
+    if (success) {
+        job->current_block++;
+
+        for (uint32_t i = 0; i < job->io_size; i++) {
+            unsigned char byte = job->buff[i];
+            job->frequencies[byte]++;
+        }
+
+        entropy_run(job);
+    } else {
+        SPDK_ERRLOG("Bdev I/O failed.\n");
+        entropy_end(job, -1);
+    }
+}
+
 static void entropy_run(void* ctx) {
-        // Write your code here
-       entropy_complete(ctx); 
+    struct entropy_job* job = ctx;
+
+    if (job->current_block == job->block_count) {
+        entropy_complete(job);
+        return;
+    }
+
+    int rc = spdk_bdev_read_blocks(job->bdev_desc, job->io_channel, job->buff,
+                                   job->current_block, 1, read_cb, job);
+    if (rc == -ENOMEM) {
+        entropy_queue_io(job);
+    } else if (rc) {
+        SPDK_ERRLOG("Failed to submit I/O with %d.\n", rc);
+        entropy_end(job, -1);
+    }
 }
 
 static void entropy_start(void* ctx) {
@@ -184,9 +222,9 @@ static void initialize_global_config(void) {
 }
 
 int main(int argc, char** argv) {
-    // Initialize SPDK arguments
     struct spdk_app_opts opts = {};
     spdk_app_opts_init(&opts, sizeof(opts));
+
     opts.name = "TSO SPDK Example";
 
     initialize_global_config();
@@ -200,11 +238,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // This will call entropy_start and will block until
-    // spdk_app_stop is called
     rc = spdk_app_start(&opts, entropy_start, NULL);
-
-    spdk_app_fini(); // Cleanup SPDK framework
 
     return 0;
 }
