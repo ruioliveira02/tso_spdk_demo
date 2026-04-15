@@ -6,7 +6,7 @@
                         {
                                 "method": "bdev_aio_create",
                                 "params": {
-                                        "name": "Bdev0",
+                                        "name": "MyBdev",
                                         "block_size": 512,
                                         "filename": "nvme.img"
                                 }
