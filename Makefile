@@ -13,7 +13,7 @@ SPDK_EVENT_LIB := $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" pkg-config --libs
 SPDK_DPDK_LIB := $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" pkg-config --libs spdk_event spdk_event_bdev spdk_env_dpdk)
 SYS_LIB := $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" pkg-config --libs --static spdk_syslibs)
 
-TARGET := entropy
+TARGET := entropy_calculator
 CSRC := main.c
 
 # Shows how to compile an external application against the SPDK individual shared objects and dpdk shared objects.
